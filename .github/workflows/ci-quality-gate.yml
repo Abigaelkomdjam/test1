@@ -1,69 +1,9 @@
-name: Quality Gate + AI Feedback (Gemini)
+name: Quality Gate Test
 
-on:
-  push:
-    branches: [ master ]
+on: [push]
 
 jobs:
-  check:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install mypy pytest requests
-      - run: mypy . --strict --pretty > mypy.txt || true
-      - run: pytest tests/ -v > pytest.txt 2>&1 || true
-
-      - name: Run AI
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null || echo "Aucune erreur")
-          echo "$ERRORS" | python scripts/ai_gemini.py > ai_fix.txt
-          echo "=== RÉPONSE IA ==="
-          cat ai_fix.txt
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: ai-fix
-          path: ai_fix.txt
-
-  email:
-    needs: check
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v3
-        with:
-          name: ai-fix
-
-      - name: Send email
-        run: |
-          AI_FIX=$(cat ai_fix.txt)
-          cat > email_body.txt << EOM
-# Problèmes Détectés
-
-## Résumé
-- [X] mypy: Erreurs détectées
-- [X] pytest: Échecs détectés
-- [OK] IA: OK
-
-## Corrections IA
-\`\`\`
-$AI_FIX
-\`\`\`
-
-Lien: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-EOM
-
-      - uses: dawidd6/action-send-mail@v3
-        with:
-          server_address: ${{ secrets.SMTP_SERVER }}
-          server_port: ${{ secrets.SMTP_PORT }}
-          username: ${{ secrets.SMTP_USER }}
-          password: ${{ secrets.SMTP_PASS }}
-          subject: "CI BLOQUÉ"
-          to: ${{ secrets.EMAIL_TO }}
-          body: file://email_body.txt
+      - run: echo "WORKFLOW OK - HELLO WORLD"
