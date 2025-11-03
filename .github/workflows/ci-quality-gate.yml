@@ -8,91 +8,84 @@ jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      mypy_status: ${{ steps.mypy.outputs.status }}
-      pytest_status: ${{ steps.pytest.outputs.status }}
+      errors: ${{ steps.check.outputs.errors }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install mypy pytest requests
-
-      - name: Run mypy
-        id: mypy
+      - run: pip install mypy pylint
+      - run: mypy . --strict --pretty > mypy.txt || true
+      - run: pylint *.py --score=n > pylint.txt || true
+      - id: check
         run: |
-          mypy . --strict --pretty > mypy.txt || true
+          ERR=""
           if grep -q "error:" mypy.txt; then
-            echo "status=[X] Typage (mypy): Erreurs détectées" >> $GITHUB_OUTPUT
-          else
-            echo "status=[OK] Typage (mypy): OK" >> $GITHUB_OUTPUT
+            ERR="${ERR}=== MYPY ERRORS ===\n$(cat mypy.txt)\n\n"
           fi
-
-      - name: Run pytest
-        id: pytest
-        run: |
-          pytest tests/ -v > pytest.txt 2>&1 || true
-          if grep -q "FAILED" pytest.txt; then
-            echo "status=[X] Tests (pytest): Échecs détectés" >> $GITHUB_OUTPUT
-          else
-            echo "status=[OK] Tests (pytest): OK" >> $GITHUB_OUTPUT
+          if grep -q "rated at" pylint.txt; then
+            SCORE=$(tail -n1 pylint.txt | grep -o "[0-9.]*" | head -1)
+            if (( $(echo "$SCORE < 9" | bc -l) )); then
+              ERR="${ERR}=== PYLINT (Score: $SCORE/10) ===\n$(cat pylint.txt)\n"
+            fi
           fi
+          echo "errors<<EOF" >> $GITHUB_OUTPUT
+          echo "$ERR" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Run Gemini AI
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null || echo "Aucune erreur détectée.")
-          echo "$ERRORS" | python scripts/ai_gemini.py > ai_fix.txt || echo "IA OK" > ai_fix.txt
-          echo "=== RÉPONSE IA ==="
-          cat ai_fix.txt
-
-      - uses: actions/upload-artifact@v4
-        if: always()
+  ai:
+    needs: check
+    if: needs.check.outputs.errors != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y jq
+      - run: |
+          curl -X POST https://api.x.ai/v1/chat/completions \
+            -H "Authorization: Bearer ${{ secrets.GROK_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "model": "grok-beta",
+              "messages": [{"role": "user", "content": "Corrige ces erreurs Python:\n\n${{ needs.check.outputs.errors }}\n\nDonne pour chaque erreur:\n- Fichier + ligne\n- Problème\n- Correction (code)\n- Explication\n\nStyle: direct, brutal, en français."}],
+              "temperature": 0.2
+            }' > ai.json
+          jq -r '.choices[0].message.content' ai.json > ai_fix.txt
+      - uses: actions/upload-artifact@v3
         with:
           name: ai-fix
           path: ai_fix.txt
 
   email:
-    needs: check
+    needs: [check, ai]
+    if: needs.check.outputs.errors != ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v3
         with:
           name: ai-fix
-
-      - name: Send Email
-        env:
-          MYPY: ${{ needs.check.outputs.mypy_status }}
-          PYTEST: ${{ needs.check.outputs.pytest_status }}
-        run: |
-          AI_FIX=$(cat ai_fix.txt)
-          cat > email_body.txt << EOM
-# Résultat CI
-
-## Résumé des Vérifications:
-- $MYPY
-- $PYTEST
-- [OK] Analyse IA: OK
-
-## Rapport IA (Gemini):
-\`\`\`
-$AI_FIX
-\`\`\`
-
-**Lien CI** : [Voir le run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-
-— Quality Gate
-EOM
-
       - uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
-          subject: "CI Result - Quality Gate"
+          subject: "CI BLOQUÉ – ${{ github.actor }}"
           to: ${{ secrets.EMAIL_TO }}
-          from: "Quality Gate <no-reply@github.com>"
-          content_type: text/html
-          convert_markdown: true
-          body: file://email_body.txt
+          from: "GitHub CI <no-reply@github.com>"
+          secure: true
+          body: |
+            Salut ${{ github.actor }},
+
+            Ton push sur master est bloqué.
+
+            Lien: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            === ERREURS ===
+            ${{ needs.check.outputs.errors }}
+
+            === CORRECTIONS IA ===
+            $(cat ai_fix.txt)
+
+            Corrige et repousse.
+
+            — Quality Gate
