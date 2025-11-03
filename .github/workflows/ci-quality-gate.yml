@@ -42,9 +42,8 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null)
+          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null || echo "")
           echo "$ERRORS" | python scripts/ai_gemini.py > ai_fix.txt
-          echo "status=[OK] Analyse IA: OK" >> $GITHUB_OUTPUT
 
   email:
     needs: check
@@ -60,7 +59,7 @@ jobs:
         run: |
           MYPY="${{ needs.check.outputs.mypy_status }}"
           PYTEST="${{ needs.check.outputs.pytest_status }}"
-          AI_FIX=$(cat ai_fix.txt 2>/dev/null || echo "Aucune correction IA.")
+          AI_FIX=$(cat ai_fix.txt 2>/dev/null || echo "Aucune correction IA disponible.")
 
           cat > email_body.txt << EOM
 # Problèmes Détectés dans le Code
