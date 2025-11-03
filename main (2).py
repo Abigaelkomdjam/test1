@@ -19,3 +19,4 @@ bad: str = 999
 # Erreur test Gemini
 wrong: int = 'test'  # mypy va râler
 
+error: str = 999
