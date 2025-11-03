@@ -20,3 +20,4 @@ bad: str = 999
 wrong: int = 'test'  # mypy va râler
 
 error: str = 999
+test: int = 'oops'
