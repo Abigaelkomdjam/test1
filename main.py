@@ -11,3 +11,4 @@ bad: str = 123
 def fail():
     assert False
 
+bad: str = 123
