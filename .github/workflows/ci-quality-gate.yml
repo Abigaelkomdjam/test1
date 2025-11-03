@@ -1,9 +1,112 @@
-name: Quality Gate Test
+name: Quality Gate + AI Feedback
 
-on: [push]
+on:
+  push:
+    branches: [ master ]
 
 jobs:
-  test:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      mypy_status: ${{ steps.mypy.outputs.status }}
+      pytest_status: ${{ steps.pytest.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install mypy pytest requests
+
+      - name: Run mypy
+        id: mypy
+        run: |
+          mypy . --strict --pretty > mypy.txt || true
+          if grep -q "error:" mypy.txt; then
+            echo "status=[X] Typage (mypy): Erreurs détectées" >> $GITHUB_OUTPUT
+          else
+            echo "status=[OK] Typage (mypy): OK" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run pytest
+        id: pytest
+        run: |
+          pytest tests/ -v > pytest.txt 2>&1 || true
+          if grep -q "FAILED" pytest.txt; then
+            echo "status=[X] Tests (pytest): Échecs détectés" >> $GITHUB_OUTPUT
+          else
+            echo "status=[OK] Tests (pytest): OK" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run Gemini AI
+        if: contains(steps.mypy.outputs.status, '[X]') || contains(steps.pytest.outputs.status, '[X]')
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null || echo "")
+          echo "$ERRORS" | python scripts/ai_gemini.py > ai_fix.txt
+          echo "=== RÉPONSE IA ==="
+          cat ai_fix.txt
+
+      - uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: ai-fix
+          path: ai_fix.txt
+
+  email:
+    needs: check
+    if: contains(needs.check.outputs.mypy_status, '[X]') || contains(needs.check.outputs.pytest_status, '[X]')
     runs-on: ubuntu-latest
     steps:
-      - run: echo "WORKFLOW OK - HELLO WORLD"
+      - uses: actions/download-artifact@v3
+        with:
+          name: ai-fix
+
+      - name: Build & Send Email
+        env:
+          MYPY: ${{ needs.check.outputs.mypy_status }}
+          PYTEST: ${{ needs.check.outputs.pytest_status }}
+        run: |
+          AI_FIX=$(cat ai_fix.txt || echo "Aucune correction disponible.")
+          cat > email_body.txt << EOM
+# Problèmes Détectés dans le Code
+
+Des erreurs ont été détectées lors de la vérification automatique du code.
+
+## Résumé des Vérifications:
+- $MYPY
+- $PYTEST
+- [OK] Analyse IA: OK
+
+## Comment Corriger:
+
+### Tests Échoués (pytest):
+Exécutez localement: `pytest tests/ -v`  
+Vérifiez les tests qui échouent et corrigez le code correspondant.
+
+### Erreurs de Typage (mypy):
+Exécutez localement: `mypy . --strict`  
+Ajoutez les annotations de type manquantes.
+
+### Corrections IA (Gemini):
+\`\`\`
+$AI_FIX
+\`\`\`
+
+**Lien CI** : [Voir le run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+— Quality Gate
+EOM
+
+      - uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: "Problèmes Détectés dans le Code"
+          to: ${{ secrets.EMAIL_TO }}
+          from: "Quality Gate <no-reply@github.com>"
+          content_type: text/html
+          convert_markdown: true
+          body: file://email_body.txt
