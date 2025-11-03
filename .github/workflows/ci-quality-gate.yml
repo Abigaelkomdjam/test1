@@ -14,23 +14,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install mypy pylint
+      - run: pip install mypy pylint requests
       - run: mypy . --strict --pretty > mypy.txt || true
       - run: pylint *.py --score=n > pylint.txt || true
       - id: check
         run: |
           ERR=""
-          if grep -q "error:" mypy.txt; then
-            ERR="${ERR}=== MYPY ERRORS ===\n$(cat mypy.txt)\n\n"
-          fi
+          if grep -q "error:" mypy.txt; then ERR+="$(cat mypy.txt)\n\n"; fi
           if grep -q "rated at" pylint.txt; then
             SCORE=$(tail -n1 pylint.txt | grep -o "[0-9.]*" | head -1)
-            if (( $(echo "$SCORE < 9" | bc -l) )); then
-              ERR="${ERR}=== PYLINT (Score: $SCORE/10) ===\n$(cat pylint.txt)\n"
-            fi
+            if (( $(echo "$SCORE < 9" | bc -l) )); then ERR+="$(cat pylint.txt)\n"; fi
           fi
           echo "errors<<EOF" >> $GITHUB_OUTPUT
-          echo "$ERR" >> $GITHUB_OUTPUT
+          echo -n "$ERR" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
   ai:
@@ -39,53 +35,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y jq curl
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
 
-      - name: Debug - Show raw errors
-        run: |
-          echo "=== ERREURS BRUTES ==="
-          echo "${{ needs.check.outputs.errors }}"
+      - name: Debug - Show errors
+        run: echo "${{ needs.check.outputs.errors }}"
 
-      - name: Call Gemini API
+      - name: Run Gemini script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          if [ -z "$GEMINI_API_KEY" ]; then
-            echo "ERREUR: GEMINI_API_KEY manquant"
-            echo "Fallback: pas de correction IA" > ai_fix.txt
-            exit 0
-          fi
-
-          PROMPT=$(cat << 'PROMPT'
-Tu es un expert Python. Corrige ces erreurs (mypy + pylint). Pour chaque erreur :
-- Fichier + ligne
-- Problème
-- Correction (code)
-- Explication courte
-
-Style : direct, brutal, en français.
-
-Erreurs :
-${{ needs.check.outputs.errors }}
-PROMPT
-          )
-
-          echo "Envoi à Gemini..."
-          curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$GEMINI_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"contents\":[{\"parts\":[{\"text\":$(printf '%s' \"$PROMPT\" | jq -R .)}]}]}" > ai_response.json || echo "CURL échoué" > ai_response.json
-
-          cat ai_response.json
-
-          if jq -e '.candidates[0].content.parts[0].text' ai_response.json > /dev/null 2>&1; then
-            jq -r '.candidates[0].content.parts[0].text' ai_response.json > ai_fix.txt
-          else
-            echo "Erreur API Gemini" > ai_fix.txt
-            cat ai_response.json >> ai_fix.txt
-          fi
-
-      - name: Debug - Show AI output
-        run: |
+          echo "${{ needs.check.outputs.errors }}" | python scripts/ai_gemini.py > ai_fix.txt
           echo "=== RÉPONSE GEMINI ==="
           cat ai_fix.txt
 
@@ -113,9 +75,9 @@ PROMPT
 
 **Salut ${{ github.actor }} !**
 
-Push sur **master** bloqué.
+Push bloqué sur **master**.
 
-## Lien CI
+## Lien
 [Voir le run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
 ## Erreurs
