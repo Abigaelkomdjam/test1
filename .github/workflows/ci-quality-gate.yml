@@ -1,26 +1,4 @@
-name: Quality Gate + AI Feedback
-
-on:
-  push:
-    branches: [ master ]
-
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    outputs:
-      errors: ${{ steps.check.outputs.errors }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install mypy pylint
-      - run: mypy . --strict --pretty > mypy.txt || true
-      - run: pylint *.py --score=n > pylint.txt || true
-      - id: check
-       # Remplace le workflow avec la version corrigée (format email parfait)
-cat > .github/workflows/ci-quality-gate.yml << 'EOF'
-name: Quality Gate + AI Feedback
+name: Quality Gate + AI Feedback (Gemini)
 
 on:
   push:
@@ -61,17 +39,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y jq
-      - run: |
-          curl -X POST https://api.x.ai/v1/chat/completions \
-            -H "Authorization: Bearer ${{ secrets.GROK_API_KEY }}" \
+      - run: sudo apt-get update && sudo apt-get install -y jq curl
+
+      - name: Debug - Show raw errors
+        run: |
+          echo "=== ERREURS BRUTES ==="
+          echo "${{ needs.check.outputs.errors }}"
+
+      - name: Call Gemini API
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "ERREUR: GEMINI_API_KEY manquant dans les secrets GitHub"
+            echo "Fallback: pas de correction IA" > ai_fix.txt
+            exit 0
+          fi
+
+          PROMPT="Tu es un expert Python. Corrige ces erreurs de code (typage mypy et style pylint). Pour chaque erreur, donne :\n- Fichier + ligne\n- Problème\n- Correction (code complet)\n- Explication courte\n\nStyle : direct, brutal, en français.\n\nErreurs :\n${{ needs.check.outputs.errors }}"
+
+          echo "Envoi à Gemini..."
+          curl -X POST "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=$GEMINI_API_KEY" \
             -H "Content-Type: application/json" \
             -d '{
-              "model": "grok-beta",
-              "messages": [{"role": "user", "content": "Corrige ces erreurs Python:\n\n${{ needs.check.outputs.errors }}\n\nDonne pour chaque erreur:\n- Fichier + ligne\n- Problème\n- Correction (code)\n- Explication\n\nStyle: direct, brutal, en français."}],
-              "temperature": 0.2
-            }' > ai.json
-          jq -r '.choices[0].message.content' ai.json > ai_fix.txt
+              "contents": [{
+                "parts": [{
+                  "text": "'"$PROMPT"'"
+                }]
+              }],
+              "generationConfig": {
+                "temperature": 0.2
+              }
+            }' > ai_response.json || echo "CURL échoué" > ai_response.json
+
+          cat ai_response.json
+
+          if grep -q '"text"' ai_response.json 2>/dev/null; then
+            # Extrait le texte de la réponse Gemini
+            jq -r '.candidates[0].content.parts[0].text // "Aucune réponse de l'\''IA"' ai_response.json > ai_fix.txt
+          else
+            echo "Erreur API Gemini (clé invalide ou quota dépassé)" > ai_fix.txt
+            cat ai_response.json >> ai_fix.txt
+          fi
+
+      - name: Debug - Show AI output
+        run: |
+          echo "=== RÉPONSE GEMINI (ai_fix.txt) ==="
+          cat ai_fix.txt
+
       - uses: actions/upload-artifact@v3
         with:
           name: ai-fix
@@ -86,27 +101,27 @@ jobs:
         with:
           name: ai-fix
 
-      - name: Build formatted email body
+      - name: Build email
         run: |
           ERRORS="${{ needs.check.outputs.errors }}"
           AI_FIX=$(cat ai_fix.txt)
 
           cat > email_body.txt << EOM
-# CI BLOQUÉ - Corrections requises
+# 🚨 CI BLOQUÉ - Corrections requises
 
 **Salut ${{ github.actor }} !**
 
 Ton push sur **master** a été **bloqué** par le Quality Gate. Voici les détails :
 
-## Lien vers le run CI
+## 🔍 Lien vers le run CI
 [Voir les logs complets](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-## Erreurs détectées
+## ❌ Erreurs détectées
 \`\`\`
 $ERRORS
 \`\`\`
 
-## Corrections proposées par IA (Grok)
+## 🤖 Corrections proposées par IA (Gemini)
 $AI_FIX
 
 **Action requise** : Corrige selon les suggestions, commit et repousse. Le merge ne passera que si tout est vert !
@@ -120,7 +135,7 @@ EOM
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
-          subject: "CI BLOQUÉ - Erreurs dans ${{ github.repository }} (commit ${{ github.sha }})"
+          subject: "🚨 CI BLOQUÉ - Erreurs dans ${{ github.repository }} (commit ${{ github.sha }})"
           to: ${{ secrets.EMAIL_TO }}
           from: "GitHub Quality Gate <no-reply@github.com>"
           content_type: 'text/html'
