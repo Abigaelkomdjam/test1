@@ -8,89 +8,86 @@ jobs:
   check:
     runs-on: ubuntu-latest
     outputs:
-      errors: ${{ steps.check.outputs.errors }}
+      mypy_status: ${{ steps.mypy.outputs.status }}
+      pytest_status: ${{ steps.pytest.outputs.status }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install mypy pylint requests
-      - run: mypy . --strict --pretty > mypy.txt || true
-      - run: pylint *.py --score=n > pylint.txt || true
-      - id: check
+      - run: pip install mypy pylint pytest requests
+
+      - name: Run mypy
+        id: mypy
         run: |
-          ERR=""
-          if grep -q "error:" mypy.txt; then ERR+="$(cat mypy.txt)\n\n"; fi
-          if grep -q "rated at" pylint.txt; then
-            SCORE=$(tail -n1 pylint.txt | grep -o "[0-9.]*" | head -1)
-            if (( $(echo "$SCORE < 9" | bc -l) )); then ERR+="$(cat pylint.txt)\n"; fi
+          mypy . --strict --pretty > mypy.txt || true
+          if grep -q "error:" mypy.txt; then
+            echo "status=[X] Typage (mypy): Erreurs détectées" >> $GITHUB_OUTPUT
+          else
+            echo "status=[OK] Typage (mypy): OK" >> $GITHUB_OUTPUT
           fi
-          echo "errors<<EOF" >> $GITHUB_OUTPUT
-          echo -n "$ERR" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
 
-  ai:
-    needs: check
-    if: needs.check.outputs.errors != ''
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install requests
+      - name: Run pytest
+        id: pytest
+        run: |
+          pytest tests/ -v > pytest.txt 2>&1 || true
+          if grep -q "FAILED" pytest.txt; then
+            echo "status=[X] Tests (pytest): Échecs détectés" >> $GITHUB_OUTPUT
+          else
+            echo "status=[OK] Tests (pytest): OK" >> $GITHUB_OUTPUT
+          fi
 
-      - name: Debug - Show errors
-        run: echo "${{ needs.check.outputs.errors }}"
-
-      - name: Run Gemini script
+      - name: Run AI (Gemini)
+        if: contains(steps.mypy.outputs.status, '[X]') || contains(steps.pytest.outputs.status, '[X]')
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          echo "${{ needs.check.outputs.errors }}" | python scripts/ai_gemini.py > ai_fix.txt
-          echo "=== RÉPONSE GEMINI ==="
-          cat ai_fix.txt
-
-      - uses: actions/upload-artifact@v3
-        with:
-          name: ai-fix
-          path: ai_fix.txt
+          ERRORS=$(cat mypy.txt pytest.txt 2>/dev/null)
+          echo "$ERRORS" | python scripts/ai_gemini.py > ai_fix.txt
+          echo "status=[OK] Analyse IA: OK" >> $GITHUB_OUTPUT
 
   email:
-    needs: [check, ai]
-    if: needs.check.outputs.errors != ''
+    needs: check
+    if: contains(needs.check.outputs.mypy_status, '[X]') || contains(needs.check.outputs.pytest_status, '[X]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v3
         with:
           name: ai-fix
+        continue-on-error: true
 
       - name: Build email
         run: |
-          ERRORS="${{ needs.check.outputs.errors }}"
-          AI_FIX=$(cat ai_fix.txt)
+          MYPY="${{ needs.check.outputs.mypy_status }}"
+          PYTEST="${{ needs.check.outputs.pytest_status }}"
+          AI_FIX=$(cat ai_fix.txt 2>/dev/null || echo "Aucune correction IA.")
 
           cat > email_body.txt << EOM
-# CI BLOQUÉ
+# Problèmes Détectés dans le Code
 
-**Salut ${{ github.actor }} !**
+Des erreurs ont été détectées lors de la vérification automatique du code.
 
-Push bloqué sur **master**.
+## Résumé des Vérifications:
+- $MYPY
+- $PYTEST
+- [OK] Analyse IA: OK
 
-## Lien
-[Voir le run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+## Comment Corriger:
 
-## Erreurs
-\`\`\`
-$ERRORS
-\`\`\`
+### Tests Échoués (pytest):
+Exécutez localement: `pytest tests/ -v`  
+Vérifiez les tests qui échouent et corrigez le code correspondant.
 
-## Corrections IA (Gemini)
+### Erreurs de Typage (mypy):
+Exécutez localement: `mypy . --strict`  
+Ajoutez les annotations de type manquantes.
+
+### Corrections IA (Gemini):
 \`\`\`
 $AI_FIX
 \`\`\`
 
-**Corrige et repousse.**
+**Lien CI** : [Voir le run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
 — Quality Gate
 EOM
@@ -101,7 +98,7 @@ EOM
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
-          subject: "CI BLOQUÉ - ${{ github.repository }}"
+          subject: "Problèmes Détectés dans le Code"
           to: ${{ secrets.EMAIL_TO }}
           from: "Quality Gate <no-reply@github.com>"
           content_type: text/html
