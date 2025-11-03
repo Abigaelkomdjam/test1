@@ -18,6 +18,28 @@ jobs:
       - run: mypy . --strict --pretty > mypy.txt || true
       - run: pylint *.py --score=n > pylint.txt || true
       - id: check
+       # Remplace le workflow avec la version corrigée (format email parfait)
+cat > .github/workflows/ci-quality-gate.yml << 'EOF'
+name: Quality Gate + AI Feedback
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      errors: ${{ steps.check.outputs.errors }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install mypy pylint
+      - run: mypy . --strict --pretty > mypy.txt || true
+      - run: pylint *.py --score=n > pylint.txt || true
+      - id: check
         run: |
           ERR=""
           if grep -q "error:" mypy.txt; then
@@ -63,29 +85,44 @@ jobs:
       - uses: actions/download-artifact@v3
         with:
           name: ai-fix
+
+      - name: Build formatted email body
+        run: |
+          ERRORS="${{ needs.check.outputs.errors }}"
+          AI_FIX=$(cat ai_fix.txt)
+
+          cat > email_body.txt << EOM
+# CI BLOQUÉ - Corrections requises
+
+**Salut ${{ github.actor }} !**
+
+Ton push sur **master** a été **bloqué** par le Quality Gate. Voici les détails :
+
+## Lien vers le run CI
+[Voir les logs complets](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+## Erreurs détectées
+\`\`\`
+$ERRORS
+\`\`\`
+
+## Corrections proposées par IA (Grok)
+$AI_FIX
+
+**Action requise** : Corrige selon les suggestions, commit et repousse. Le merge ne passera que si tout est vert !
+
+— Ton Quality Gate IA
+EOM
+
       - uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
           server_port: ${{ secrets.SMTP_PORT }}
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
-          subject: "CI BLOQUÉ – ${{ github.actor }}"
+          subject: "CI BLOQUÉ - Erreurs dans ${{ github.repository }} (commit ${{ github.sha }})"
           to: ${{ secrets.EMAIL_TO }}
-          from: "GitHub CI <no-reply@github.com>"
-          secure: true
-          body: |
-            Salut ${{ github.actor }},
-
-            Ton push sur master est bloqué.
-
-            Lien: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-            === ERREURS ===
-            ${{ needs.check.outputs.errors }}
-
-            === CORRECTIONS IA ===
-            $(cat ai_fix.txt)
-
-            Corrige et repousse.
-
-            — Quality Gate
+          from: "GitHub Quality Gate <no-reply@github.com>"
+          content_type: 'text/html'
+          convert_markdown: true
+          body: file://email_body.txt
