@@ -15,3 +15,7 @@ print("Cette ligne fait plus de 100 caractères pour déclencher une erreur pyli
 def unused_function():
     pass  # Erreur pylint: fonction non utilisée
 bad: str = 999
+
+# Erreur test Gemini
+wrong: int = 'test'  # mypy va râler
+
