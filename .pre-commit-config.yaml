@@ -1,0 +1,16 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0  # Vérifiez la dernière version
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+-   repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2  # Dernière version de mypy
+    hooks:
+    -   id: mypy
+        additional_dependencies: [types-requests]  # Ajoutez si besoin pour vos types
+-   repo: https://github.com/PyCQA/pylint
+    rev: v3.3.1  # Dernière version
+    hooks:
+    -   id: pylint
+        args: [--rcfile=.pylintrc]  # Optionnel, pour config personnalisée
